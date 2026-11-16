@@ -415,6 +415,7 @@ def _find(curve, t):
 
 
 def apply_segment(doc, curve, t_a, t_b, keys, replace_between=True):
+    """Returns (shape error, keys removed in between), or None if skipped."""
     ka, kb = _find(curve, t_a), _find(curve, t_b)
     if ka is None or kb is None:
         return None
@@ -425,11 +426,13 @@ def apply_segment(doc, curve, t_a, t_b, keys, replace_between=True):
     v0, v1 = ka.GetValue(), kb.GetValue()
     dv = v1 - v0
 
+    removed = 0
     if replace_between or len(keys) > 2:
         for i in reversed(range(curve.GetKeyCount())):
             t = curve.GetKey(i).GetTime().Get()
             if t0 + EPS < t < t1 - EPS:
                 curve.DelKey(i)
+                removed += 1
 
     # inner keys (bounce, elastic, saved multi-key curves)
     for k in keys[1:-1]:
@@ -461,38 +464,41 @@ def apply_segment(doc, curve, t_a, t_b, keys, replace_between=True):
 
     # verify: compare C4D's curve with the preset shape
     if abs(dv) < EPS:
-        return 0.0
+        return 0.0, removed
     err = 0.0
     for i in range(1, 16):
         u = i / 16.0
         got = curve.GetValue(c4d.BaseTime(t0 + u * dt))
         err = max(err, abs((got - v0) / dv - eval_curve(keys, u)))
-    return err
+    return err, removed
 
 
 def apply_preset(doc, preset, replace_between=True):
+    """Returns (segments, tracks, mode, worst shape error, keys removed)."""
     keys = build_keys(preset)
     jobs, mode = collect_jobs(doc)
     if not jobs:
-        return 0, 0, mode, 0.0
+        return 0, 0, mode, 0.0, 0
     count = 0
     worst = 0.0
+    removed = 0
     doc.StartUndo()
     try:
         for track, pairs in jobs:
             doc.AddUndo(c4d.UNDOTYPE_CHANGE, track)
             curve = track.GetCurve()
             for t_a, t_b in pairs:
-                err = apply_segment(doc, curve, t_a, t_b, keys, replace_between)
-                if err is not None:
+                res = apply_segment(doc, curve, t_a, t_b, keys, replace_between)
+                if res is not None:
                     count += 1
-                    worst = max(worst, err)
+                    worst = max(worst, res[0])
+                    removed += res[1]
             curve.SetKeyDirty()
     finally:
         # always close the undo step, or one failed track breaks Ctrl+Z
         doc.EndUndo()
         c4d.EventAdd()
-    return count, len(jobs), mode, worst
+    return count, len(jobs), mode, worst, removed
 
 
 def capture_from_selection(doc):
@@ -905,7 +911,11 @@ class PreviewArea(gui.GeUserArea):
             steps = 14
             vals = [eval_curve(keys, i / float(steps)) for i in range(steps + 1)]
             lo, hi = min(0.0, min(vals)), max(1.0, max(vals))
-            tx1, tx2 = 16, w - 16
+            self.DrawSetTextCol(COL_TEXT, c4d.COLOR_TRANS)
+            self.DrawText("Motion", 10, ty, c4d.DRAWTEXT_HALIGN_LEFT | _VCENTER)
+            tx1, tx2 = 10 + self.DrawGetTextWidth("Motion") + 12, w - 16
+            if tx2 - tx1 < 40:
+                tx1 = 16           # no room for the label's share: full width
 
             def tpos(v):
                 return tx1 + (v - lo) / (hi - lo) * (tx2 - tx1)
@@ -1319,7 +1329,8 @@ class EaseDialog(gui.GeDialog):
             self._status("These settings are out of range - nothing applied.")
             return
         try:
-            n, tracks, mode, worst = apply_preset(doc, work, self.GetBool(ID_REPLACE))
+            n, tracks, mode, worst, removed = apply_preset(
+                doc, work, self.GetBool(ID_REPLACE))
         except Exception as e:
             _report("apply", e)
             self._status("Apply failed: %s (Ctrl+Z restores the keys)" % e)
@@ -1329,6 +1340,9 @@ class EaseDialog(gui.GeDialog):
             return
         text = "%s: %d segment(s) on %d track(s), %s" % (
             self.work.get("name", ""), n, tracks, mode)
+        if removed:
+            # never silent: these keys sat between the selected ones
+            text += " - removed %d key%s in between" % (removed, "" if removed == 1 else "s")
         if worst > 0.02:
             text += " - C4D shaped the curve %.0f%% off the preset" % (worst * 100)
             print("[Ease Presets] %s" % text)
