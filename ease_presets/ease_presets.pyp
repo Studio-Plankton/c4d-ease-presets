@@ -656,12 +656,11 @@ TILE_H = 72
 TILE_GAP = 4
 TILE_LABEL_H = 20
 SIDE_BY_SIDE_W = 600  # dialog width where the settings move beside the grid
-PANEL_W = 270         # default width of the settings (divider is draggable)
-PANEL_W_MIN = 200
-PREVIEW_H = 130       # default chart height when the settings sit below
-PREVIEW_H_MIN = 90
-GRID_MIN = 100        # what a dragged divider always leaves for the tiles
-PREF_PANEL_W, PREF_PREVIEW_H = 1, 2   # ids in the plugin's preferences
+PREVIEW_MIN = (140, 90)   # smallest chart
+# Share of the window for (tiles, settings) until the divider is dragged.
+SPLIT_SIDE = (62.0, 38.0)      # side by side: widths
+SPLIT_STACKED = (40.0, 60.0)   # stacked: heights
+PREF_SPLIT_SIDE, PREF_SPLIT_STACKED = 10, 11   # ids in the plugin's preferences
 TAB_ROWS = ((330, 3), (210, 2), (130, 1))   # below this width: tabs per row
 
 
@@ -850,11 +849,7 @@ class PreviewArea(gui.GeUserArea):
         return time.time() - self.t0 < self.CYCLE * self.LOOPS
 
     def GetMinSize(self):
-        # The divider sets these: the chart is what makes its section
-        # wider (side by side) or taller (stacked).
-        if self.dlg.side:
-            return self.dlg.panel_w, PREVIEW_H_MIN
-        return 140, self.dlg.preview_h
+        return PREVIEW_MIN
 
     def DrawMsg(self, x1, y1, x2, y2, msg):
         self.OffScreenOn()
@@ -942,69 +937,6 @@ class PreviewArea(gui.GeUserArea):
         return False
 
 
-class Divider(gui.GeUserArea):
-    """Drag handle between the presets and the settings."""
-    SIZE = 7
-    MAX_DRAG_SECONDS = 120.0
-
-    def __init__(self, dlg):
-        super(Divider, self).__init__()
-        self.dlg = dlg
-
-    def GetMinSize(self):
-        return self.SIZE, self.SIZE
-
-    def DrawMsg(self, x1, y1, x2, y2, msg):
-        self.OffScreenOn()
-        w, h = self.GetWidth(), self.GetHeight()
-        self.DrawSetPen(COL_BG)
-        self.DrawRectangle(0, 0, w, h)
-        self.DrawSetPen(COL_GRID)
-        if self.dlg.side:      # short grip line in the middle
-            self.DrawRectangle(w // 2, h // 2 - 14, w // 2, h // 2 + 14)
-        else:
-            self.DrawRectangle(w // 2 - 14, h // 2, w // 2 + 14, h // 2)
-
-    def Message(self, msg, result):
-        if msg.GetId() == c4d.BFM_GETCURSORINFO:
-            cursor = getattr(c4d, "MOUSE_ARROW_H" if self.dlg.side else "MOUSE_ARROW_V", None)
-            if cursor is not None:
-                result.SetId(c4d.BFM_GETCURSORINFO)
-                result.SetInt32(c4d.RESULT_CURSOR, cursor)
-                return True
-        return gui.GeUserArea.Message(self, msg, result)
-
-    def InputEvent(self, msg):
-        if msg[c4d.BFM_INPUT_DEVICE] != c4d.BFM_INPUT_MOUSE or \
-                msg[c4d.BFM_INPUT_CHANNEL] != c4d.BFM_INPUT_MOUSELEFT:
-            return False
-        dlg = self.dlg
-        if msg[c4d.BFM_INPUT_DOUBLECLICK]:
-            dlg.set_split(PANEL_W if dlg.side else PREVIEW_H)
-            dlg.save_prefs()
-            return True
-        pos = self.Global2Local()
-        start = dlg.panel_w if dlg.side else dlg.preview_h
-        moved = 0.0
-        began = time.time()
-        self.MouseDragStart(c4d.BFM_INPUT_MOUSELEFT,
-                            float(msg[c4d.BFM_INPUT_X] + pos["x"]),
-                            float(msg[c4d.BFM_INPUT_Y] + pos["y"]),
-                            c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE)
-        try:
-            while time.time() - began < self.MAX_DRAG_SECONDS:
-                result, dx, dy, channels = self.MouseDrag()
-                if result != c4d.MOUSEDRAGRESULT_CONTINUE:
-                    break
-                moved += dx if dlg.side else dy
-                # the settings are right of / below the divider
-                dlg.set_split(start - moved)
-        finally:
-            self.MouseDragEnd()
-        dlg.save_prefs()
-        return True
-
-
 # dialog ids
 ID_ROOT = 1000
 ID_TABS = 1001
@@ -1027,7 +959,6 @@ ID_RENAME = 1045
 ID_RELOAD = 1046
 ID_STATUS = 1050
 ID_SPLIT = 1051
-ID_DIVIDER = 1052
 ID_TAB0 = 1100          # one id per tab
 
 BEZIER_IDS = {ID_X1: "x1", ID_Y1: "y1", ID_X2: "x2", ID_Y2: "y2"}
@@ -1047,12 +978,10 @@ class EaseDialog(gui.GeDialog):
         self.work = copy.deepcopy(self.presets[0])
         self.replace = True
         self.side = True          # settings beside the grid (else below it)
-        self.panel_w = PANEL_W
-        self.preview_h = PREVIEW_H
+        self.weights = {}         # divider positions, per layout
         self.load_prefs()
         self.grid = GridArea(self)
         self.preview = PreviewArea(self)
-        self.divider = Divider(self)
         self.tab_cols = len(TABS)
         self.tab_guis = []
         self._deferred = set()
@@ -1125,8 +1054,10 @@ class EaseDialog(gui.GeDialog):
         """Grid + settings. Rebuilt when the window crosses the width where
         the settings fit beside the grid."""
         side = self.side
-        self.GroupBegin(ID_SPLIT, FIT, 3 if side else 1, 0)
-        self.GroupSpace(0, 0)
+        # A weighted group: C4D draws its own draggable divider between the
+        # two sections, the same one its managers use.
+        self.GroupBegin(ID_SPLIT, FIT, 2 if side else 1, 1 if side else 2, "",
+                        c4d.BFV_GRIDGROUP_ALLOW_WEIGHTS)
 
         self.ScrollGroupBegin(ID_SCROLL, FIT,
                               c4d.SCROLLGROUP_VERT | c4d.SCROLLGROUP_AUTOVERT, 80, 60)
@@ -1136,15 +1067,11 @@ class EaseDialog(gui.GeDialog):
         self.GroupEnd()
         self.GroupEnd()
 
-        self.AddUserArea(ID_DIVIDER, c4d.BFV_SCALEFIT if side else c4d.BFH_SCALEFIT)
-        self.AttachUserArea(self.divider, ID_DIVIDER)
-
-        if side:
-            self.GroupBegin(ID_PANEL, c4d.BFH_RIGHT | c4d.BFV_SCALEFIT, 1, 0)
-        else:
-            self.GroupBegin(ID_PANEL, c4d.BFH_SCALEFIT | c4d.BFV_BOTTOM, 1, 0)
+        self.GroupBegin(ID_PANEL, FIT, 1, 0)
+        self.GroupBorderSpace(4 if side else 0, 0 if side else 4, 0, 0)
         self.GroupSpace(0, 4)
-        self.AddUserArea(ID_PREVIEW, FIT if side else c4d.BFH_SCALEFIT)
+        # the chart takes all the room its section gets
+        self.AddUserArea(ID_PREVIEW, FIT)
         self.AttachUserArea(self.preview, ID_PREVIEW)
 
         self.GroupBegin(ID_GRP_BEZ, c4d.BFH_SCALEFIT, 2, 0)
@@ -1176,48 +1103,63 @@ class EaseDialog(gui.GeDialog):
         self.GroupEnd()
 
         self.GroupEnd()
+        self._load_weights()
 
     # ------------------------------------------------------- divider + prefs
-    def set_split(self, size):
-        """Width of the settings (side by side) or height of the chart
-        (stacked), kept inside what the window can show."""
-        dim = self.GetItemDim(ID_ROOT) or {}
+    def _default_weights(self):
+        bc = c4d.BaseContainer()
         if self.side:
-            room = dim.get("w", 0) - GRID_MIN
-            size = int(max(PANEL_W_MIN, min(size, max(PANEL_W_MIN, room))))
-            if size == self.panel_w:
-                return
-            self.panel_w = size
+            bc.SetInt32(c4d.GROUPWEIGHTS_PERCENT_W_CNT, 2)
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_W_VAL + 0, SPLIT_SIDE[0])
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_W_VAL + 1, SPLIT_SIDE[1])
+            bc.SetInt32(c4d.GROUPWEIGHTS_PERCENT_H_CNT, 1)
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_H_VAL + 0, 100.0)
         else:
-            # the sliders and buttons under the chart need about 190 px
-            room = dim.get("h", 0) - GRID_MIN - 190
-            size = int(max(PREVIEW_H_MIN, min(size, max(PREVIEW_H_MIN, room))))
-            if size == self.preview_h:
-                return
-            self.preview_h = size
-        self.preview.LayoutChanged()
-        self.LayoutChanged(ID_SPLIT)
-        if "scroll" in self._deferred:      # the tile columns follow at once
-            self._deferred.discard("scroll")
-            self.LayoutChanged(ID_SCROLL)
+            bc.SetInt32(c4d.GROUPWEIGHTS_PERCENT_W_CNT, 1)
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_W_VAL + 0, 100.0)
+            bc.SetInt32(c4d.GROUPWEIGHTS_PERCENT_H_CNT, 2)
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_H_VAL + 0, SPLIT_STACKED[0])
+            bc.SetFloat(c4d.GROUPWEIGHTS_PERCENT_H_VAL + 1, SPLIT_STACKED[1])
+        return bc
+
+    def _load_weights(self):
+        try:
+            bc = self.weights.get(self.side) or self._default_weights()
+            self.GroupWeightsLoad(ID_SPLIT, bc)
+        except Exception as e:
+            _report("weights", e)
+
+    def Message(self, msg, result):
+        # the user let go of the divider: remember where it is
+        if msg.GetId() == c4d.BFM_WEIGHTS_CHANGED and \
+                msg.GetInt32(c4d.BFM_WEIGHTS_CHANGED) == ID_SPLIT:
+            try:
+                bc = self.GroupWeightsSave(ID_SPLIT)
+                if bc is not None:
+                    self.weights[self.side] = bc
+                    self.save_prefs()
+            except Exception as e:
+                _report("weights", e)
+        return gui.GeDialog.Message(self, msg, result)
 
     def load_prefs(self):
         try:
             bc = plugins.GetWorldPluginData(PLUGIN_ID)
             if bc is not None:
-                self.panel_w = int(_num(bc.GetInt32(PREF_PANEL_W, PANEL_W),
-                                        PANEL_W_MIN, 4000, PANEL_W))
-                self.preview_h = int(_num(bc.GetInt32(PREF_PREVIEW_H, PREVIEW_H),
-                                          PREVIEW_H_MIN, 4000, PREVIEW_H))
+                for side, pid in ((True, PREF_SPLIT_SIDE), (False, PREF_SPLIT_STACKED)):
+                    sub = bc.GetContainer(pid)
+                    if sub is not None and len(sub) > 0:
+                        self.weights[side] = sub
         except Exception as e:
             _report("prefs", e)
 
     def save_prefs(self):
         try:
             bc = c4d.BaseContainer()
-            bc.SetInt32(PREF_PANEL_W, int(self.panel_w))
-            bc.SetInt32(PREF_PREVIEW_H, int(self.preview_h))
-            plugins.SetWorldPluginData(PLUGIN_ID, bc, True)
+            for side, pid in ((True, PREF_SPLIT_SIDE), (False, PREF_SPLIT_STACKED)):
+                if self.weights.get(side) is not None:
+                    bc.SetContainer(pid, self.weights[side])
+            plugins.SetWorldPluginData(PLUGIN_ID, bc, False)
         except Exception as e:
             _report("prefs", e)
 

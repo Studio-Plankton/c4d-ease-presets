@@ -38,8 +38,9 @@ Dock the window anywhere and save the layout: it reflows to the space it gets.
 - The tiles add and remove columns as the window changes width.
 - A wide window puts the settings beside the tiles; a narrow one puts them below.
 - Drag the divider between the tiles and the settings to resize them (sideways when
-  side by side, up and down for the chart height when stacked). Double-click the
-  divider to reset it. The sizes are remembered.
+  side by side, up and down when stacked). The chart fills its section, so a bigger
+  section means a bigger chart. It is Cinema 4D's own divider, and the split is
+  remembered for each of the two layouts.
 - All colours come from the Cinema 4D interface scheme, so the window follows the
   theme and any colours changed in Preferences.
 
