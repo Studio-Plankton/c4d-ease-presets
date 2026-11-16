@@ -76,3 +76,7 @@ edits are picked up at the next start of Cinema 4D (PowerShell):
 ```powershell
 New-Item -ItemType Junction -Path "$env:APPDATA\Maxon\<your C4D prefs folder>\plugins\ease_presets" -Target "<repo>\ease_presets"
 ```
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
