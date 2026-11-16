@@ -1,5 +1,5 @@
 """
-Ease Presets for Cinema 4D
+Plankton Ease for Cinema 4D
 ==========================
 
 A small preset library for animation curves.
@@ -9,6 +9,8 @@ A small preset library for animation curves.
   or, if no keys are selected, to every key segment of the selected objects.
 * Bezier presets set the tangents of the two keys (CSS cubic-bezier style).
 * Bounce / Elastic presets insert keys between the two keys and shape them.
+* Copy Ease / Paste Ease move the ease of selected keys to other keys, from
+  the window or as two commands that can get keyboard shortcuts.
 * Save your own curves from selected keys (2 keys = easing, 3+ keys = full
   curve shape) or save the edited parameters as a new preset.
 
@@ -31,8 +33,10 @@ from c4d import gui, plugins, storage, bitmaps
 
 # Unique ID registered with Maxon (Plugin Cafe, label "EasePresets").
 PLUGIN_ID = 1074269
-PLUGIN_NAME = "Ease Presets"
-PLUGIN_VERSION = "2.0"
+COPY_ID = 1074280     # "EasePresetsCopy": the Copy Ease command
+PASTE_ID = 1074281    # "EasePresetsPaste": the Paste Ease command
+PLUGIN_NAME = "Plankton Ease"
+PLUGIN_VERSION = "2.1"
 USER_FILE = "ease_presets_user.json"
 
 EPS = 1e-6
@@ -503,6 +507,9 @@ def apply_preset(doc, preset, replace_between=True):
 def capture_from_selection(doc):
     """Reads the first curve that has 2+ selected keys and returns a preset
     (bezier when exactly 2 keys span the range, else a multi-key curve)."""
+    # A Dope Sheet selection often covers several tracks (X, Y and Z of a
+    # position key): tracks that can't be used are skipped, not fatal.
+    problem = None
     for node in iter_animated_nodes(doc):
         for track in value_tracks(node):
             curve = track.GetCurve()
@@ -511,8 +518,9 @@ def capture_from_selection(doc):
                 continue
             i0, i1 = min(sel), max(sel)
             if i1 - i0 + 1 > MAX_CURVE_KEYS:
-                return None, "That is %d keys - a preset holds up to %d." % (
+                problem = problem or "That is %d keys - a preset holds up to %d." % (
                     i1 - i0 + 1, MAX_CURVE_KEYS)
+                continue
             k0, k1 = curve.GetKey(i0), curve.GetKey(i1)
             t0, t1 = k0.GetTime().Get(), k1.GetTime().Get()
             v0, v1 = k0.GetValue(), k1.GetValue()
@@ -520,7 +528,9 @@ def capture_from_selection(doc):
             if dt <= EPS:
                 continue
             if abs(dv) < EPS:
-                return None, "The first and last selected keys have the same value - can't normalise that curve."
+                problem = problem or ("The first and last selected keys have the same value - "
+                                      "can't read an ease from that curve.")
+                continue
             raw = [curve.GetKey(i) for i in range(i0, i1 + 1)]
             keys = []
             for k in raw:
@@ -544,9 +554,10 @@ def capture_from_selection(doc):
                           "params": {"keys": keys}}
             preset = sanitize_preset(preset)
             if preset is None:
-                return None, "These keys can't be stored as a preset (values out of range)."
+                problem = problem or "These keys can't be stored as a preset (values out of range)."
+                continue
             return preset, None
-    return None, "Select at least 2 keys on one curve (Timeline / F-Curve)."
+    return None, problem or "Select at least 2 keys on one curve (Timeline / F-Curve)."
 
 
 # --------------------------------------------------------------------------
@@ -582,7 +593,7 @@ class PresetStore(object):
                     self.user.append(preset)
             self.skipped += max(0, len(items) - MAX_PRESETS)
         except Exception as e:
-            print("[Ease Presets] Could not read %s: %s" % (self.path, e))
+            print("[Plankton Ease] Could not read %s: %s" % (self.path, e))
             return "Could not read the preset file: %s" % e
         return None
 
@@ -742,7 +753,7 @@ def _report(where, error):
     key = (where, repr(error))
     if key not in _reported:
         _reported.add(key)
-        print("[Ease Presets] %s: %r" % (where, error))
+        print("[Plankton Ease] %s: %r" % (where, error))
 
 
 class GridArea(gui.GeUserArea):
@@ -946,6 +957,72 @@ class PreviewArea(gui.GeUserArea):
         return False
 
 
+# --------------------------------------------------------------------------
+# Apply, Copy Ease, Paste Ease - shared by the window and the two commands
+# --------------------------------------------------------------------------
+
+# The copied ease lives in memory until Cinema 4D quits. "replace" mirrors
+# the window's Replace Keys Between checkbox for the shortcut commands.
+_state = {"clip": None, "replace": True, "dlg": None}
+
+
+def run_apply(doc, preset, replace_between, label):
+    """Applies a preset and returns the text for the status line."""
+    preset = sanitize_preset(preset)
+    if preset is None:
+        return "These settings are out of range - nothing applied."
+    try:
+        n, tracks, mode, worst, removed = apply_preset(doc, preset, replace_between)
+    except Exception as e:
+        _report("apply", e)
+        return "Apply failed: %s (Ctrl+Z restores the keys)" % e
+    if n == 0:
+        return "Nothing applied - select 2+ keys, or an animated object."
+    text = "%s: %d segment(s) on %d track(s), %s" % (label, n, tracks, mode)
+    if removed:
+        # never silent: these keys sat between the selected ones
+        text += " - removed %d key%s in between" % (removed, "" if removed == 1 else "s")
+    if worst > 0.02:
+        text += " - C4D shaped the curve %.0f%% off the preset" % (worst * 100)
+        print("[Plankton Ease] %s" % text)
+    return text
+
+
+def copy_ease(doc):
+    """Reads the ease of the selected keys. Returns (copied?, status text)."""
+    preset, err = capture_from_selection(doc)
+    if preset is None:
+        return False, "Copy Ease: %s" % err
+    preset["name"] = "Copied Ease"
+    _state["clip"] = preset
+    if preset["kind"] == "curve":
+        what = "a curve of %d keys" % len(preset["params"]["keys"])
+    else:
+        what = "the ease between 2 keys"
+    return True, "Copied %s - select the target keys, then Paste Ease." % what
+
+
+def paste_ease(doc):
+    """Applies the copied ease to the selected keys. Returns the status text."""
+    if _state["clip"] is None:
+        return "Paste Ease: nothing copied yet - select 2+ keys and use Copy Ease first."
+    return run_apply(doc, _state["clip"], _state["replace"], "Pasted ease")
+
+
+def _notify(text, copied=False):
+    """Feedback for the shortcut commands: C4D's status bar, plus the window
+    when it is open."""
+    gui.StatusSetText(text)
+    dlg = _state["dlg"]
+    try:
+        if dlg is not None and dlg.IsOpen():
+            if copied:
+                dlg.show_clipboard()
+            dlg._status(text)
+    except Exception as e:
+        _report("notify", e)
+
+
 # dialog ids
 ID_ROOT = 1000
 ID_TABS = 1001
@@ -966,6 +1043,8 @@ ID_DELETE = 1043
 ID_FOLDER = 1044
 ID_RENAME = 1045
 ID_RELOAD = 1046
+ID_COPY = 1047
+ID_PASTE = 1048
 ID_STATUS = 1050
 ID_SPLIT = 1051
 ID_TAB0 = 1100          # one id per tab
@@ -994,6 +1073,7 @@ class EaseDialog(gui.GeDialog):
         self.tab_cols = len(TABS)
         self.tab_guis = []
         self._deferred = set()
+        _state["dlg"] = self      # the shortcut commands report here too
 
     # ---------------------------------------------------------------- layout
     def CreateLayout(self):
@@ -1002,6 +1082,9 @@ class EaseDialog(gui.GeDialog):
         self.MenuFlushAll()
         self.MenuSubBegin("Presets")
         self.MenuAddString(ID_APPLY, "Apply to Selected Keys")
+        self.MenuAddSeparator()
+        self.MenuAddString(ID_COPY, "Copy Ease from Selected Keys")
+        self.MenuAddString(ID_PASTE, "Paste Ease to Selected Keys")
         self.MenuAddSeparator()
         self.MenuAddString(ID_SAVE_SEL, "Save from Selected Keys...")
         self.MenuAddString(ID_SAVE_CUR, "Save Current Settings As...")
@@ -1106,6 +1189,8 @@ class EaseDialog(gui.GeDialog):
 
         self.AddButton(ID_APPLY, c4d.BFH_SCALEFIT, 0, 0, "Apply")
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(ID_COPY, c4d.BFH_SCALEFIT, 0, 0, "Copy Ease")
+        self.AddButton(ID_PASTE, c4d.BFH_SCALEFIT, 0, 0, "Paste Ease")
         self.AddButton(ID_SAVE_SEL, c4d.BFH_SCALEFIT, 0, 0, "Save from Keys...")
         self.AddButton(ID_SAVE_CUR, c4d.BFH_SCALEFIT, 0, 0, "Save As...")
         self.GroupEnd()
@@ -1323,29 +1408,20 @@ class EaseDialog(gui.GeDialog):
         doc = c4d.documents.GetActiveDocument()
         if doc is None:
             return
-        work = sanitize_preset(self.work)
-        if work is None:
-            self._status("These settings are out of range - nothing applied.")
+        self._status(run_apply(doc, self.work, self.GetBool(ID_REPLACE),
+                               self.work.get("name", "")))
+
+    def show_clipboard(self):
+        """Shows the copied ease in the chart; no tile is selected then.
+        It can be tweaked and applied, or kept with Save As."""
+        if _state["clip"] is None:
             return
-        try:
-            n, tracks, mode, worst, removed = apply_preset(
-                doc, work, self.GetBool(ID_REPLACE))
-        except Exception as e:
-            _report("apply", e)
-            self._status("Apply failed: %s (Ctrl+Z restores the keys)" % e)
-            return
-        if n == 0:
-            self._status("Nothing applied - select 2+ keys, or an animated object.")
-            return
-        text = "%s: %d segment(s) on %d track(s), %s" % (
-            self.work.get("name", ""), n, tracks, mode)
-        if removed:
-            # never silent: these keys sat between the selected ones
-            text += " - removed %d key%s in between" % (removed, "" if removed == 1 else "s")
-        if worst > 0.02:
-            text += " - C4D shaped the curve %.0f%% off the preset" % (worst * 100)
-            print("[Ease Presets] %s" % text)
-        self._status(text)
+        self.sel = -1
+        self.work = copy.deepcopy(_state["clip"])
+        self._sync_fields()
+        self.preview.restart()
+        self.grid.Redraw()
+        self.preview.Redraw()
 
     # --------------------------------------------------------------- events
     def Command(self, cid, msg):
@@ -1369,8 +1445,17 @@ class EaseDialog(gui.GeDialog):
             self.preview.Redraw()
         elif cid == ID_REPLACE:
             self.replace = self.GetBool(ID_REPLACE)
+            _state["replace"] = self.replace
         elif cid == ID_APPLY:
             self.do_apply()
+        elif cid == ID_COPY:
+            copied, text = copy_ease(c4d.documents.GetActiveDocument())
+            if copied:
+                self.show_clipboard()
+            self._status(text)
+        elif cid == ID_PASTE:
+            _state["replace"] = self.GetBool(ID_REPLACE)
+            self._status(paste_ease(c4d.documents.GetActiveDocument()))
         elif cid == ID_SAVE_SEL:
             doc = c4d.documents.GetActiveDocument()
             preset, err = capture_from_selection(doc)
@@ -1442,6 +1527,24 @@ class EaseCommand(plugins.CommandData):
         return self._dlg().Restore(pluginid=PLUGIN_ID, secret=sec_ref)
 
 
+class CopyEaseCommand(plugins.CommandData):
+    """Copy Ease without the window: give it a shortcut in Customize Commands."""
+
+    def Execute(self, doc):
+        copied, text = copy_ease(doc)
+        _notify(text, copied)
+        return True
+
+
+class PasteEaseCommand(plugins.CommandData):
+    def Execute(self, doc):
+        _notify(paste_ease(doc))
+        return True
+
+    def GetState(self, doc):
+        return c4d.CMD_ENABLED if _state["clip"] is not None else 0
+
+
 def _load_icon():
     bmp = bitmaps.BaseBitmap()
     path = os.path.join(os.path.dirname(__file__), "res", "icon.png")
@@ -1455,3 +1558,11 @@ if __name__ == "__main__":
                                   icon=_load_icon(),
                                   help="Animation curve preset library: apply easing, bounce and elastic presets to keys",
                                   dat=EaseCommand())
+    plugins.RegisterCommandPlugin(id=COPY_ID, str="Copy Ease", info=0,
+                                  icon=_load_icon(),
+                                  help="Plankton Ease: copy the ease of the selected keys",
+                                  dat=CopyEaseCommand())
+    plugins.RegisterCommandPlugin(id=PASTE_ID, str="Paste Ease", info=0,
+                                  icon=_load_icon(),
+                                  help="Plankton Ease: paste the copied ease onto the selected keys",
+                                  dat=PasteEaseCommand())
