@@ -58,8 +58,8 @@ Dock the window anywhere and save the layout: it reflows to the space it gets.
 ## Notes
 
 - The status line warns when Cinema 4D shaped a curve differently from the preset.
-- The plugin ID (1066741) is a development ID. Before the plugin goes to machines
-  outside the studio, get a unique ID at developers.maxon.net and change `PLUGIN_ID`.
+- The plugin ID (1074269) is registered with Maxon under the label "EasePresets", so
+  the plugin can be shared outside the studio.
 - The plugin reads and writes only its preset file and its own window sizes in the
   Cinema 4D preferences. It makes no network connections.
 

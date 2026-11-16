@@ -29,9 +29,8 @@ import copy
 import time
 from c4d import gui, plugins, storage, bitmaps
 
-# Development ID. Get a free unique ID from https://developers.maxon.net
-# before distributing this plugin to other machines.
-PLUGIN_ID = 1066741
+# Unique ID registered with Maxon (Plugin Cafe, label "EasePresets").
+PLUGIN_ID = 1074269
 PLUGIN_NAME = "Ease Presets"
 PLUGIN_VERSION = "2.0"
 USER_FILE = "ease_presets_user.json"
