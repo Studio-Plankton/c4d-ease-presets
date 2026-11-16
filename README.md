@@ -5,6 +5,12 @@ you apply to selected keys, plus your own saved curves.
 
 Version 2.0, written for and tested in Cinema 4D 2027 (Python 3.11).
 
+<img src="docs/ease-presets.png" width="765" alt="Ease Presets window: preset tiles on the left, chart and settings for Back Out on the right">
+
+| Bounce and Elastic | Narrow or docked: settings below |
+| --- | --- |
+| <img src="docs/dynamics.png" width="480" alt="Dynamics tab with Bounce Out selected and its Amplitude, Count and Decay settings"> | <img src="docs/stacked.png" width="270" alt="Stacked layout with the chart and settings under the tiles"> |
+
 ## Install
 
 1. On the GitHub page, click **Code > Download ZIP** and unpack it.
