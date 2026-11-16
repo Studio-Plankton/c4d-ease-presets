@@ -7,11 +7,16 @@ Version 2.0, written for and tested in Cinema 4D 2027 (Python 3.11).
 
 ## Install
 
-1. Close Cinema 4D.
-2. Copy the `ease_presets` folder (it holds `ease_presets.pyp` and `res/`) into the
-   `plugins` folder of your Cinema 4D preferences
-   (Edit > Preferences > Open Preferences Folder).
-3. Start Cinema 4D, then Extensions > Ease Presets.
+1. On the GitHub page, click **Code > Download ZIP** and unpack it.
+2. In Cinema 4D, open **Edit > Preferences** and click **Open Preferences Folder**.
+   Then close Cinema 4D.
+3. Copy the `ease_presets` folder from the unpacked ZIP (the inner folder that holds
+   `ease_presets.pyp` and `res/`, not the whole download) into the `plugins` folder
+   of that preferences folder.
+4. Start Cinema 4D, then **Extensions > Ease Presets**.
+
+To update, replace the `ease_presets` folder with the new one. Your own presets are
+stored outside it and stay.
 
 Dock the window anywhere and save the layout: it reflows to the space it gets.
 
